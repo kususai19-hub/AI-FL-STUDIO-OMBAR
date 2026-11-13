@@ -1,0 +1,47 @@
+{
+  "project": "OMBAR FL-AI Studio",
+  "version": "1.2.0",
+  "author": "Berty / OMBAR",
+  "description": "Natural-language web control for FL Studio via MCP + FastAPI",
+
+  "backend": {
+    "host": "0.0.0.0",
+    "port": 8080,
+    "module": "backend/server.py",
+    "framework": "FastAPI + uvicorn"
+  },
+
+  "mcp": {
+    "host": "127.0.0.1",
+    "port": 9787,
+    "protocol": "JSON-RPC 2.0 over TCP (line-delimited)",
+    "flstudio_mcp_dir_env": "FLSTUDIO_MCP_DIR",
+    "flstudio_mcp_default_dir": "F:\\BERTY\\Projeck klaud FL\\flstudio-mcp-main\\flstudio-mcp-main"
+  },
+
+  "frontend": {
+    "type": "static (index.html + app.js + style.css)",
+    "served_by": "FastAPI at /, also openable as file://",
+    "default_backend_url": "http://localhost:8080"
+  },
+
+  "cors": {
+    "mode": "permissive",
+    "allow_origins": ["*"],
+    "allow_origin_regex": ".*",
+    "note": "Allows Vercel-hosted frontends to call the localhost backend. Tighten for production."
+  },
+
+  "launchers": {
+    "master": "launchers/OMBAR_FL-AI_Studio_Launcher.bat",
+    "mcp":    "launchers/start_mcp_daemon.bat",
+    "server": "launchers/start_server.bat",
+    "stop":   "launchers/stop_all.bat"
+  },
+
+  "commands_supported": {
+    "beat": ["set_bpm", "set_key", "set_genre", "create_drum_pattern", "load_instrument", "add_track"],
+    "mix":  ["route_track_to_mixer", "load_effect", "set_effect_param", "enable_vocal_chain"],
+    "arrange": ["duplicate_pattern", "set_song_structure", "automate_param", "split_clip", "move_clip"]
+  }
+}

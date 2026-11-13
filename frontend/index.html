@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OMBAR FL-AI Studio</title>
+  <link rel="stylesheet" href="style.css" />
+  <link rel="icon"
+        href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎛️</text></svg>" />
+</head>
+<body>
+  <div class="app-shell">
+    <!-- ===================== HEADER ===================== -->
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark">AI</div>
+        <div class="brand-text">
+          <h1>OMBAR FL-AI Studio</h1>
+          <span class="brand-sub">Natural-language control for FL Studio via MCP</span>
+        </div>
+      </div>
+
+      <div class="status-cluster" id="statusCluster">
+        <div class="status-pill" data-key="backend">
+          <span class="dot"></span><span class="label">Backend</span>
+        </div>
+        <div class="status-pill" data-key="mcp">
+          <span class="dot"></span><span class="label">MCP :9787</span>
+        </div>
+        <div class="status-pill" data-key="fl">
+          <span class="dot"></span><span class="label">FL Studio</span>
+        </div>
+        <button id="refreshStatus" class="ghost-btn" title="Refresh status">
+          &#8635;
+        </button>
+      </div>
+    </header>
+
+    <!-- ===================== MAIN ===================== -->
+    <main class="workspace">
+      <!-- LEFT: prompt + plan -->
+      <section class="panel prompt-panel">
+        <h2 class="panel-title">Prompt Studio</h2>
+        <p class="panel-hint">
+          Ketik perintah natural-language. AI akan menerjemahkan ke perintah
+          FL Studio (BPM, beat, instrumen, vocal chain, struktur lagu).
+        </p>
+
+        <div class="prompt-row">
+          <textarea id="promptInput"
+            placeholder="Contoh: buat beat hip-hop 90 bpm di A minor, kasih 808 dan hi-hat, lalu pasang vocal chain di insert 6 dengan auto-tune, eq, kompresor, reverb"
+            rows="4"></textarea>
+        </div>
+
+        <div class="quick-row">
+          <button class="chip" data-prompt="buat beat hip-hop 90 bpm di A minor dengan 808, kick, snare, hi-hat">Hip-Hop 90 BPM</button>
+          <button class="chip" data-prompt="buat beat papua pop 95 bpm dengan FL Keys dan Sytrus">Papua Pop</button>
+          <button class="chip" data-prompt="buat beat EDM 128 bpm dengan kick four-on-the-floor">EDM 128</button>
+          <button class="chip" data-prompt="pasang vocal chain di insert 6 dengan auto-tune, eq, kompresor maximus, reverb">Vocal Chain</button>
+          <button class="chip" data-prompt="atur struktur lagu: intro, verse, chorus, drop, outro">Song Structure</button>
+          <button class="chip" data-prompt="remix track: duplicate verse jadi drop dan automate filter cutoff">Remix + Automation</button>
+        </div>
+
+        <div class="action-row">
+          <button id="sendBtn" class="primary-btn">
+            <span class="btn-ico">&#9658;</span> Kirim ke FL Studio
+          </button>
+          <button id="clearBtn" class="ghost-btn">Bersihkan</button>
+          <span class="backend-url-wrap">
+            <label for="backendUrl">Backend URL</label>
+            <input id="backendUrl" type="text" value="http://localhost:8080"
+                   spellcheck="false" />
+          </span>
+        </div>
+
+        <!-- PLAN preview -->
+        <div class="plan-box" id="planBox" hidden>
+          <div class="plan-head">
+            <h3>Rencana AI</h3>
+            <span class="plan-conf" id="planConf"></span>
+          </div>
+          <ol class="plan-list" id="planList"></ol>
+        </div>
+      </section>
+
+      <!-- RIGHT: live log + history -->
+      <section class="panel log-panel">
+        <div class="log-head">
+          <h2 class="panel-title">Live Console</h2>
+          <label class="autoscroll">
+            <input type="checkbox" id="autoscroll" checked />
+            auto-scroll
+          </label>
+        </div>
+        <div class="log-stream" id="logStream"></div>
+
+        <h2 class="panel-title mt">Riwayat Perintah</h2>
+        <div class="history" id="history"></div>
+      </section>
+    </main>
+
+    <!-- ===================== FOOTER ===================== -->
+    <footer class="footer">
+      <span>OMBAR FL-AI Studio &middot; FastAPI :8080 &middot; MCP :9787</span>
+      <span id="wsState">WebSocket: idle</span>
+      <span>v1.2.0</span>
+    </footer>
+  </div>
+
+  <!-- toast -->
+  <div id="toast" class="toast" hidden></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
