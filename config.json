@@ -1,6 +1,6 @@
 {
   "project": "OMBAR FL-AI Studio",
-  "version": "1.2.0",
+  "version": "1.5.0",
   "author": "Berty / OMBAR",
   "description": "Natural-language web control for FL Studio via MCP + FastAPI",
 
@@ -36,7 +36,15 @@
     "master": "launchers/OMBAR_FL-AI_Studio_Launcher.bat",
     "mcp":    "launchers/start_mcp_daemon.bat",
     "server": "launchers/start_server.bat",
+    "tunnel": "launchers/start_tunnel.bat",
+    "tunnel_ngrok": "launchers/start_tunnel_ngrok.bat",
     "stop":   "launchers/stop_all.bat"
+  },
+
+  "vercel": {
+    "deploy_guide": "DEPLOY-VERCEL.md",
+    "frontend_config": "frontend/vercel.json",
+    "note": "Frontend on Vercel (HTTPS) talks to local backend via Cloudflare tunnel (HTTPS). Tunnel script auto-downloads cloudflared.exe."
   },
 
   "commands_supported": {

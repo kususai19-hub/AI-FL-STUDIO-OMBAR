@@ -54,6 +54,7 @@ class Step:
     tool: str                  # MCP tool name
     args: Dict[str, Any] = field(default_factory=dict)
     note: str = ""             # human-readable explanation for the dashboard
+    wave: int = 0              # dependency wave: 0 setup, 1 create, 2 configure, 3 finalize
 
 
 @dataclass
@@ -161,6 +162,31 @@ INSTRUMENT_ALIASES: Dict[str, str] = {
     "sakura": "Sakura",
     "toxic": "Toxic Biohazard",
     "3xosc": "3xOsc",
+}
+
+# Dependency waves for parallel execution.
+#   wave 0 = setup    (independent: tempo, key, genre, routing, structure)
+#   wave 1 = create   (needs setup: drum patterns, instruments, effects, remix dup)
+#   wave 2 = configure (needs create: effect params, automation)
+#   wave 3 = finalize  (needs configure: enable vocal chain)
+# Steps in the SAME wave fire concurrently on the pipelined MCP connection.
+WAVE_FOR: Dict[str, int] = {
+    "set_bpm":              0,
+    "set_key":              0,
+    "set_genre":            0,
+    "route_track_to_mixer": 0,
+    "set_song_structure":   0,
+    "ai_prompt":            0,
+    "add_track":            0,
+    "create_drum_pattern":  1,
+    "load_instrument":      1,
+    "load_effect":          1,
+    "duplicate_pattern":    1,
+    "split_clip":           1,
+    "move_clip":            1,
+    "set_effect_param":     2,
+    "automate_param":       2,
+    "enable_vocal_chain":   3,
 }
 
 
@@ -326,23 +352,59 @@ class AIEngine:
         return p
 
     # ----------------------------------------------------------------------- #
-    #  Execution
+    #  Execution  -  parallel waves (instant)
     # ----------------------------------------------------------------------- #
     async def execute(self, plan: Plan) -> List[Dict[str, Any]]:
-        results: List[Dict[str, Any]] = []
-        for i, step in enumerate(plan.steps, start=1):
+        """Execute steps grouped into dependency waves.
+
+        Steps within the SAME wave run concurrently (asyncio.gather) - this is
+        what makes the dashboard feel instant: a 12-step plan with 4 drums +
+        2 instruments all in wave 1 fires all 6 MCP calls at once on the
+        pipelined connection instead of one-by-one.
+        Waves run in order (0 -> 1 -> 2 -> 3) so dependencies hold.
+        """
+        import asyncio
+        # assign wave numbers based on tool name
+        for s in plan.steps:
+            s.wave = WAVE_FOR.get(s.tool, 0)
+        # bucket by wave preserving original order
+        total = len(plan.steps)
+        results: List[Dict[str, Any]] = [{}] * total
+        waves: Dict[int, List[tuple]] = {}
+        for i, step in enumerate(plan.steps):
+            waves.setdefault(step.wave, []).append((i, step))
+
+        async def _do(idx: int, step: Step) -> Dict[str, Any]:
             self._emit("step.start",
-                       {"index": i, "total": len(plan.steps),
-                        "tool": step.tool, "args": step.args, "note": step.note})
+                       {"index": idx + 1, "total": total,
+                        "tool": step.tool, "args": step.args, "note": step.note,
+                        "wave": step.wave})
             res = await self.bridge.call_tool_safe(step.tool, step.args)
-            res["_index"] = i
+            if not isinstance(res, dict):
+                res = {"raw": res}
+            res["_index"] = idx + 1
             res["_group"] = step.group
             res["_tool"] = step.tool
             res["_note"] = step.note
-            results.append(res)
-            ok = res.get("ok", True) if isinstance(res, dict) else True
+            ok = res.get("ok", True)
             self._emit("step.done",
-                       {"index": i, "ok": ok, "result": res})
+                       {"index": idx + 1, "ok": ok, "result": res, "wave": step.wave})
+            return res
+
+        for wave_num in sorted(waves.keys()):
+            bucket = waves[wave_num]
+            self._emit("wave.start",
+                       {"wave": wave_num, "count": len(bucket),
+                        "tools": [s.tool for _, s in bucket]})
+            # fire all steps in this wave concurrently
+            wave_results = await asyncio.gather(
+                *[asyncio.ensure_future(_do(i, s)) for i, s in bucket],
+                return_exceptions=False,
+            )
+            for (i, _s), res in zip(bucket, wave_results):
+                results[i] = res
+            self._emit("wave.done",
+                       {"wave": wave_num, "count": len(bucket)})
         return results
 
     # ----------------------------------------------------------------------- #

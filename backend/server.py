@@ -51,11 +51,55 @@ from ai_engine import AIEngine  # noqa: E402
 #  Configuration
 # --------------------------------------------------------------------------- #
 HERE = Path(__file__).resolve().parent
-FRONTEND_DIR = HERE.parent / "frontend"
-
 MCP_HOST = os.environ.get("MCP_HOST", "127.0.0.1")
 MCP_PORT = int(os.environ.get("MCP_PORT", "9787"))
 SERVER_PORT = int(os.environ.get("SERVER_PORT", "8080"))
+
+# Logging must be configured BEFORE the frontend resolution below uses `log`.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s  %(levelname)-7s  %(name)s  %(message)s",
+    datefmt="%H:%M:%S",
+)
+log = logging.getLogger("ombar.server")
+
+# Import the self-contained embedded dashboard (served as fallback when the
+# external frontend/ folder cannot be located).
+from dashboard import DASHBOARD_HTML  # noqa: E402
+
+
+def _resolve_frontend_dir() -> tuple[Optional[Path], list[str]]:
+    """Search several candidate locations for the frontend folder.
+
+    Returns (found_path_or_None, list_of_searched_paths).
+    This makes the server robust against flat extractions or being copied
+    into a different parent folder.
+    """
+    env_dir = os.environ.get("FRONTEND_DIR")
+    candidates: list[Path] = []
+    if env_dir:
+        candidates.append(Path(env_dir).resolve())
+    candidates.extend([
+        HERE.parent / "frontend",          # ombar-flai-studio/backend -> ../frontend
+        HERE / "frontend",                 # backend/frontend (flat layout)
+        HERE.parent.parent / "frontend",   # one level higher
+        Path.cwd() / "frontend",           # current working dir
+        Path.cwd() / "ombar-flai-studio" / "frontend",
+    ])
+    searched = [str(c) for c in candidates]
+    for c in candidates:
+        if (c / "index.html").exists():
+            return c, searched
+    return None, searched
+
+
+FRONTEND_DIR, FRONTEND_SEARCHED = _resolve_frontend_dir()
+EMBEDDED_MODE = FRONTEND_DIR is None
+if EMBEDDED_MODE:
+    log.warning("Frontend folder not found. Searched: %s", FRONTEND_SEARCHED)
+    log.warning("Serving EMBEDDED dashboard instead (fully functional).")
+else:
+    log.info("Frontend folder found: %s", FRONTEND_DIR)
 
 # Origins allowed by CORS.  "*" + a permissive regex covers Vercel previews,
 # localhost dev servers and even file:// opened HTML.
@@ -65,19 +109,9 @@ ALLOWED_ORIGINS = [
 ]
 
 # --------------------------------------------------------------------------- #
-#  Logging
-# --------------------------------------------------------------------------- #
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s  %(levelname)-7s  %(name)s  %(message)s",
-    datefmt="%H:%M:%S",
-)
-log = logging.getLogger("ombar.server")
-
-# --------------------------------------------------------------------------- #
 #  App + middleware
 # --------------------------------------------------------------------------- #
-app = FastAPI(title="OMBAR FL-AI Studio API", version="1.2.0")
+app = FastAPI(title="OMBAR FL-AI Studio API", version="1.3.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -175,15 +209,31 @@ def _safe_json(text: str) -> Dict[str, Any]:
 # --------------------------------------------------------------------------- #
 @app.get("/")
 async def root():
-    """Serve the dashboard if the frontend folder exists, else a health page."""
-    index = FRONTEND_DIR / "index.html"
-    if index.exists():
-        return FileResponse(index)
-    return PlainTextResponse(
-        "OMBAR FL-AI Studio backend is running.\n"
-        "Frontend folder not found - open /api/status to inspect.",
-        media_type="text/plain",
-    )
+    """Serve the dashboard.
+
+    Priority:
+      1. external frontend/index.html  (if the folder was located)
+      2. embedded DASHBOARD_HTML       (self-contained fallback - ALWAYS works)
+    """
+    if FRONTEND_DIR is not None:
+        index = FRONTEND_DIR / "index.html"
+        if index.exists():
+            return FileResponse(str(index))
+    # Embedded fallback - a complete dashboard, not a bare text message.
+    return PlainTextResponse(DASHBOARD_HTML, media_type="text/html")
+
+
+@app.get("/api/paths")
+async def paths():
+    """Diagnostic: show where the frontend was searched for / found."""
+    return {
+        "ok": True,
+        "embedded": EMBEDDED_MODE,
+        "frontend_dir": str(FRONTEND_DIR) if FRONTEND_DIR else None,
+        "searched": FRONTEND_SEARCHED,
+        "hint": ("Set env FRONTEND_DIR=<path> or place the frontend/ folder "
+                 "next to backend/ to use the full external UI."),
+    }
 
 
 @app.get("/api/status")
@@ -346,7 +396,7 @@ async def websocket_endpoint(ws: WebSocket):
 # --------------------------------------------------------------------------- #
 #  Static frontend
 # --------------------------------------------------------------------------- #
-if FRONTEND_DIR.exists():
+if FRONTEND_DIR is not None and FRONTEND_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
 
 
@@ -355,14 +405,25 @@ if FRONTEND_DIR.exists():
 # --------------------------------------------------------------------------- #
 @app.on_event("startup")
 async def _startup():
-    log.info("OMBAR FL-AI Studio backend starting on :%d", SERVER_PORT)
+    log.info("OMBAR FL-AI Studio backend starting on :%d (v1.5.0)", SERVER_PORT)
     log.info("MCP target => %s:%d", MCP_HOST, MCP_PORT)
     reachable = bridge.is_reachable()
     log.info("MCP daemon reachable: %s", reachable)
     if not reachable:
         log.warning("MCP daemon offline - backend still boots. "
                     "Start it with launchers/start_mcp_daemon.bat")
-    emit("server.start", {"mcp_reachable": reachable})
+    else:
+        # PRE-WARM: establish + initialize the TCP connection and fetch the
+        # tool list NOW, so the first user prompt doesn't pay the handshake
+        # cost (~500ms). The pipelined reader loop also starts here.
+        try:
+            tools = await bridge.list_tools()
+            log.info("MCP connection pre-warmed: %d tools ready (instant mode)",
+                     len(tools))
+            emit("mcp.prewarmed", {"tools": len(tools)})
+        except MCPConnectionError as exc:
+            log.warning("Pre-warm failed (will retry on first prompt): %s", exc)
+    emit("server.start", {"mcp_reachable": reachable, "prewarmed": reachable})
 
 
 @app.on_event("shutdown")

@@ -44,6 +44,12 @@ echo   Both services launched in their own windows.
 echo   - Keep this window open while you work.
 echo   - Open the dashboard at:  http://localhost:8080
 echo   - Or open frontend\index.html directly in a browser.
+echo.
+echo   [Vercel users] Frontend Anda di Vercel (HTTPS) tidak bisa
+echo   langsung memanggil http://localhost:8080 (mixed content block).
+echo   Jalankan juga:  launchers\start_tunnel.bat
+echo   untuk dapat URL HTTPS publik, lalu paste ke kolom Backend URL
+echo   di dashboard Vercel.
 echo ============================================================
 echo.
 echo   Press any key to close THIS launcher window

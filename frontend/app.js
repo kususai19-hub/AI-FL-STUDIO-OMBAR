@@ -33,6 +33,62 @@
   let ws = null;
   let history = JSON.parse(localStorage.getItem("ombar.history") || "[]");
 
+  // ---- Mixed-content detection (Vercel HTTPS -> localhost HTTP) -------- #
+  // When the dashboard is hosted on Vercel (HTTPS) but the backend URL is
+  // http://localhost:8080, browsers BLOCK the request as "mixed content".
+  // We detect this and show a prominent banner with the two real fixes:
+  //   1) use a Cloudflare/ngrok tunnel URL (recommended)
+  //   2) allow insecure content for this site in Chrome settings
+  function isHttpsPage() {
+    return location.protocol === "https:";
+  }
+  function isHttpBackend(url) {
+    return /^http:\/\//i.test(url);
+  }
+  function showMixedContentBanner(backendUrl) {
+    // remove any previous banner
+    const old = document.getElementById("mcBanner");
+    if (old) old.remove();
+    const banner = document.createElement("div");
+    banner.id = "mcBanner";
+    banner.style.cssText = [
+      "position:sticky", "top:0", "z-index:50",
+      "background:#3a1d0c", "color:#ffd9a8",
+      "border-bottom:2px solid #f5b042",
+      "padding:12px 18px", "font-size:13px", "line-height:1.6",
+      "display:flex", "gap:10px", "align-items:flex-start",
+      "flex-wrap:wrap",
+    ].join(";") + ";";
+    banner.innerHTML =
+      '<span style="font-size:18px">&#9888;</span>' +
+      '<div style="flex:1;min-width:240px">' +
+      '<b>Mixed Content terdeteksi.</b> Halaman ini HTTPS (Vercel) tapi ' +
+      'backend <code style="background:#00000040;padding:1px 5px;border-radius:3px">' +
+      backendUrl + '</code> adalah HTTP. Browser akan memblokir koneksi. ' +
+      '<br>Pilih salah satu perbaikan:' +
+      '<br><b>1.</b> Jalankan <code>launchers\\start_tunnel.bat</code> di PC Anda, ' +
+      'lalu salin URL HTTPS dari tunnel (mis. <code>https://xxx.trycloudflare.com</code>) ' +
+      'ke kolom Backend URL di kanan. <i>(Direkomendasikan)</i>' +
+      '<br><b>2.</b> Atau di Chrome: klik ikon gembok di address bar &rarr; ' +
+      '"Site settings" &rarr; "Insecure content" &rarr; "Allow".' +
+      '</div>' +
+      '<button id="mcClose" style="background:#00000040;color:#ffd9a8;border:none;' +
+      'cursor:pointer;font-size:16px;padding:2px 8px;border-radius:4px">x</button>';
+    document.body.insertBefore(banner, document.body.firstChild);
+    document.getElementById("mcClose").onclick = function () {
+      banner.remove();
+    };
+  }
+  function checkMixedContent() {
+    if (isHttpsPage() && isHttpBackend(backendBase)) {
+      showMixedContentBanner(backendBase);
+      logLine("warn", "Mixed content: HTTPS page -> HTTP backend. Pakai tunnel atau allow insecure content.", "warn");
+    } else {
+      const old = document.getElementById("mcBanner");
+      if (old) old.remove();
+    }
+  }
+
   // ---- Utilities -------------------------------------------------------
   function toast(msg, kind) {
     els.toast.textContent = msg;
@@ -81,6 +137,7 @@
     backendBase = els.backendUrl.value.trim().replace(/\/$/, "");
     localStorage.setItem("ombar.backend", backendBase);
     toast("Backend URL disimpan: " + backendBase);
+    checkMixedContent();
     connectWs();
     pollStatus();
   });
@@ -158,7 +215,19 @@
         break;
       case "plan.ready":
         renderPlan(p.plan);
-        text = "rencana siap (" + (p.plan.steps || []).length + " langkah)";
+        text = "rencana siap (" + (p.plan.steps || []).length + " langkah, paralel per-wave)";
+        kind = "ok";
+        break;
+      case "wave.start":
+        text = ">> wave " + p.wave + ": " + p.count + " langkah dijalankan PARALEL " +
+               "(" + (p.tools || []).join(", ") + ")";
+        kind = "ok";
+        break;
+      case "wave.done":
+        text = "<< wave " + p.wave + " selesai (" + p.count + " langkah)";
+        break;
+      case "mcp.prewarmed":
+        text = "MCP pre-warmed: " + p.tools + " tools siap (instant mode)";
         kind = "ok";
         break;
       case "step.start":
@@ -330,6 +399,10 @@
 
   // ---- Boot ------------------------------------------------------------
   logLine("boot", "OMBAR FL-AI Studio dashboard ready");
+  if (isHttpsPage()) {
+    logLine("boot", "running on HTTPS (Vercel/production) - backend harus HTTPS juga atau allow insecure content", "warn");
+  }
+  checkMixedContent();
   pollStatus();
   connectWs();
   setInterval(pollStatus, 15000); // refresh status every 15s

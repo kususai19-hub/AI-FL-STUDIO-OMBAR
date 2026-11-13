@@ -59,7 +59,9 @@ class MCPBridge:
         self._id = 0
         self._initialized = False
         self._tools_cache: Optional[List[str]] = None
-        self._lock = asyncio.Lock()
+        self._connect_lock = asyncio.Lock()   # only serialises (re)connect
+        self._pending: Dict[int, "asyncio.Future[Dict[str, Any]]"] = {}
+        self._reader_task: Optional[asyncio.Task] = None
         self._emit: Optional[Callable[[str, Dict[str, Any]], None]] = None
 
     # -- emitter hook (so server.py can stream events to the browser) -------- #
@@ -88,18 +90,66 @@ class MCPBridge:
     async def _connect(self) -> None:
         if self._writer is not None and not self._writer.is_closing():
             return
+        async with self._connect_lock:
+            # double-check after acquiring (another task may have connected)
+            if self._writer is not None and not self._writer.is_closing():
+                return
+            try:
+                self._reader, self._writer = await asyncio.wait_for(
+                    asyncio.open_connection(self.host, self.port),
+                    timeout=CONNECT_TIMEOUT,
+                )
+            except (OSError, asyncio.TimeoutError) as exc:
+                raise MCPConnectionError(
+                    f"Cannot connect to MCP daemon at {self.host}:{self.port} "
+                    f"({exc.__class__.__name__}). Is FL Studio + the MCP daemon "
+                    f"running?"
+                ) from exc
+            await self._initialize()
+            # Start the background reader loop that resolves pipelined
+            # requests by matching response id -> pending future.
+            if self._reader_task is None or self._reader_task.done():
+                self._reader_task = asyncio.ensure_future(self._reader_loop())
+
+    async def _reader_loop(self) -> None:
+        """Background task: read responses and resolve pending futures by id.
+
+        This is what enables JSON-RPC pipelining - many requests can be
+        in-flight at once on a single TCP connection, and responses are
+        matched back to callers by their `id` field.
+        """
+        err_msg = "closed"
         try:
-            self._reader, self._writer = await asyncio.wait_for(
-                asyncio.open_connection(self.host, self.port),
-                timeout=CONNECT_TIMEOUT,
-            )
-        except (OSError, asyncio.TimeoutError) as exc:
-            raise MCPConnectionError(
-                f"Cannot connect to MCP daemon at {self.host}:{self.port} "
-                f"({exc.__class__.__name__}). Is FL Studio + the MCP daemon "
-                f"running?"
-            ) from exc
-        await self._initialize()
+            while True:
+                resp = await self._recv()
+                rid = resp.get("id")
+                if rid is not None and rid in self._pending:
+                    fut = self._pending.pop(rid)
+                    if not fut.done():
+                        fut.set_result(resp)
+                else:
+                    # unsolicited notification - log and ignore
+                    log.debug("MCP notification: %s", resp)
+        except (MCPConnectionError, asyncio.TimeoutError,
+                ConnectionError, OSError) as exc:
+            err_msg = str(exc)
+            log.warning("MCP reader loop ended: %s", exc)
+        except asyncio.CancelledError:
+            err_msg = "cancelled"
+            raise
+        finally:
+            # fail every still-pending request so callers don't hang
+            for fut in list(self._pending.values()):
+                if not fut.done():
+                    fut.set_exception(
+                        MCPConnectionError(f"Connection lost: {err_msg}")
+                    )
+            self._pending.clear()
+            # mark closed so next request reconnects
+            try:
+                await self._close()
+            except Exception:
+                pass
 
     async def _initialize(self) -> None:
         """Perform the MCP initialize handshake once per connection."""
@@ -120,6 +170,9 @@ class MCPBridge:
         self._emit_event("mcp.connected", {"server": server_info})
 
     async def _close(self) -> None:
+        if self._reader_task is not None and not self._reader_task.done():
+            self._reader_task.cancel()
+        self._reader_task = None
         if self._writer:
             try:
                 self._writer.close()
@@ -181,39 +234,57 @@ class MCPBridge:
 
     async def _request(self, method: str,
                        params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        async with self._lock:
+        """Send a JSON-RPC request and await its response.
+
+        Pipelined: multiple _request calls can run concurrently on the same
+        connection. Each gets its own future resolved by the reader loop.
+        """
+        await self._connect()
+        self._id += 1
+        req_id = self._id
+        loop = asyncio.get_event_loop()
+        fut: "asyncio.Future[Dict[str, Any]]" = loop.create_future()
+        self._pending[req_id] = fut
+        payload = {"jsonrpc": "2.0", "id": req_id, "method": method}
+        if params is not None:
+            payload["params"] = params
+        self._emit_event("mcp.request", {"method": method, "params": params, "id": req_id})
+        try:
+            await self._send(payload)
+            resp = await asyncio.wait_for(fut, READ_TIMEOUT)
+        except (MCPConnectionError, asyncio.TimeoutError) as exc:
+            # connection broke or timed out - retry once on a fresh socket
+            self._pending.pop(req_id, None)
+            if not fut.done():
+                fut.cancel()
+            log.warning("MCP request %s failed (%s) - reconnecting", method, exc)
+            await self._close()
             await self._connect()
             self._id += 1
             req_id = self._id
+            fut = loop.create_future()
+            self._pending[req_id] = fut
             payload = {"jsonrpc": "2.0", "id": req_id, "method": method}
             if params is not None:
                 payload["params"] = params
-            self._emit_event("mcp.request", {"method": method, "params": params})
-            try:
-                await self._send(payload)
-                resp = await self._recv()
-            except MCPConnectionError:
-                # retry once on a broken socket
-                await self._close()
-                await self._connect()
-                await self._send(payload)
-                resp = await self._recv()
-            self._emit_event("mcp.response", {"method": method, "resp": resp})
-            if "error" in resp:
-                err = resp["error"]
-                raise MCPConnectionError(
-                    f"MCP error {err.get('code')}: {err.get('message')}"
-                )
-            return resp
+            await self._send(payload)
+            resp = await asyncio.wait_for(fut, READ_TIMEOUT)
+        self._emit_event("mcp.response", {"method": method, "id": req_id, "resp": resp})
+        if "error" in resp:
+            err = resp["error"]
+            raise MCPConnectionError(
+                f"MCP error {err.get('code')}: {err.get('message')}"
+            )
+        return resp
 
     async def _notify(self, method: str,
                       params: Optional[Dict[str, Any]] = None) -> None:
-        async with self._lock:
-            await self._connect()
-            payload = {"jsonrpc": "2.0", "method": method}
-            if params is not None:
-                payload["params"] = params
-            await self._send(payload)
+        """Fire-and-forget notification (no response expected)."""
+        await self._connect()
+        payload = {"jsonrpc": "2.0", "method": method}
+        if params is not None:
+            payload["params"] = params
+        await self._send(payload)
 
     # -- public API ---------------------------------------------------------- #
     async def list_tools(self) -> List[str]:

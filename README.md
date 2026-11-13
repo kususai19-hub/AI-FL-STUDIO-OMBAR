@@ -7,6 +7,9 @@ MCP tool-calls (BPM, beat patterns, instruments, vocal chains, song structure),
 and the bridge forwards them over TCP to the FL Studio MCP daemon on
 `127.0.0.1:9787`.
 
+> **Deploy ke Vercel?** Baca [`DEPLOY-VERCEL.md`](./DEPLOY-VERCEL.md) untuk
+> panduan lengkap GitHub → Vercel + Cloudflare tunnel (mengatasi mixed-content).
+
 ---
 
 ## Architecture
@@ -49,19 +52,24 @@ and the bridge forwards them over TCP to the FL Studio MCP daemon on
 ombar-flai-studio/
 +-- config.json                       # central config
 +-- README.md                         # this file
++-- DEPLOY-VERCEL.md                  # GitHub -> Vercel deployment guide
 +-- backend/
 |   +-- server.py                     # FastAPI app (CORS + safe JSON + WS)
 |   +-- mcp_bridge.py                 # async JSON-RPC client -> :9787
 |   +-- ai_engine.py                  # NL prompt -> MCP tool-calls
+|   +-- dashboard.py                  # EMBEDDED self-contained dashboard (fallback)
 |   +-- requirements.txt
 +-- frontend/
 |   +-- index.html                    # dashboard
-|   +-- app.js                        # prompt + WS + history
+|   +-- app.js                        # prompt + WS + history + mixed-content detect
 |   +-- style.css                     # dark studio theme
+|   +-- vercel.json                   # Vercel static-site config
 +-- launchers/
     +-- OMBAR_FL-AI_Studio_Launcher.bat   # master: start everything
     +-- start_mcp_daemon.bat              # MCP daemon only (:9787)
     +-- start_server.bat                  # FastAPI only (:8080)
+    +-- start_tunnel.bat                  # Cloudflare tunnel (HTTPS for Vercel)
+    +-- start_tunnel_ngrok.bat            # ngrok alternative tunnel
     +-- stop_all.bat                      # kill both
 ```
 
@@ -106,6 +114,29 @@ ombar-flai-studio/
    kompresor maximus, reverb
    ```
    Press **Ctrl+Enter** or click **Kirim ke FL Studio**.
+
+---
+
+## Quick start: Deploy frontend ke Vercel (GitHub)
+
+Pakai dashboard dari mana saja lewat Vercel, backend tetap lokal:
+
+1. **Push folder `frontend/` ke GitHub** (atau seluruh repo, set Root Directory = `frontend` di Vercel).
+
+2. **Connect repo ke Vercel** → Deploy. Dapat URL `https://ombar-fl-ai.vercel.app`.
+
+3. **Jalankan backend lokal + tunnel** di PC Anda:
+   ```
+   launchers\OMBAR_FL-AI_Studio_Launcher.bat   (backend + MCP)
+   launchers\start_tunnel.bat                  (Cloudflare tunnel → URL HTTPS)
+   ```
+
+4. **Copy URL tunnel** (mis. `https://random-words.trycloudflare.com`) → paste ke kolom **Backend URL** di dashboard Vercel.
+
+5. Selesai! Dashboard Vercel mengontrol FL Studio lokal Anda.
+
+> Detail lengkap + troubleshooting mixed-content: baca
+> [`DEPLOY-VERCEL.md`](./DEPLOY-VERCEL.md).
 
 ---
 
@@ -188,6 +219,7 @@ MCP tools: `duplicate_pattern`, `set_song_structure`, `automate_param`,
 | GET    | `/`             | -                                      | Serves the dashboard HTML        |
 | GET    | `/api/status`   | -                                      | Backend + MCP + FL Studio health |
 | GET    | `/api/tools`    | -                                      | List MCP tools                   |
+| GET    | `/api/paths`    | -                                      | Diagnostics: frontend search     |
 | POST   | `/api/prompt`   | `{"prompt":"..."}`                     | Run AI engine -> MCP             |
 | POST   | `/api/command`  | `{"tool":"set_bpm","args":{"bpm":90}}` | Direct MCP call                  |
 | WS     | `/ws`           | text / JSON                            | Live event stream                |
@@ -198,12 +230,28 @@ MCP tools: `duplicate_pattern`, `set_song_structure`, `automate_param`,
 
 | Symptom                                    | Fix                                                    |
 |--------------------------------------------|--------------------------------------------------------|
+| **"Frontend folder not found" / dashboard teks polos** | Ini sudah diperbaiki di v1.3+: server otomatis menampilkan **embedded dashboard** yang fully-functional walau folder `frontend/` hilang. Buka `/api/paths` untuk lihat path yang dicari. Untuk pakai UI eksternal, set env `FRONTEND_DIR=F:\...\frontend` atau letakkan folder `frontend/` sejajar dengan `backend/`. |
 | Backend status red                         | Run `launchers\start_server.bat`                       |
 | MCP status red / `ERR_CONNECTION_REFUSED`  | Run `launchers\start_mcp_daemon.bat`; open FL Studio   |
 | `pip install` fails                        | Run as admin, or use `py -m pip install ...`           |
 | CORS error in browser console              | Already allowed - confirm backend is actually running |
 | Tool returns `MCP error -32601`            | That tool isn't exposed by your flstudio-mcp version   |
 | WebSocket reconnects endlessly             | Backend is down - start `server.py` first              |
+
+### Cara kerja embedded dashboard (v1.3.0+)
+
+`server.py` sekarang mencari folder `frontend/` di beberapa lokasi sekaligus:
+1. env var `FRONTEND_DIR`
+2. `backend/../frontend` (struktur normal)
+3. `backend/frontend` (flat layout)
+4. `backend/../../frontend` (satu level di atas)
+5. `<cwd>/frontend` (current working dir)
+6. `<cwd>/ombar-flai-studio/frontend`
+
+Jika **tidak ketemu**, server otomatis menyajikan **dashboard tertanam**
+(dari `backend/dashboard.py`) - UI lengkap dengan prompt, quick-chip,
+live console, riwayat, dan WebSocket. Jadi Anda selalu dapat dashboard
+berfungsi penuh walau hanya menyalin `server.py` + `dashboard.py`.
 
 ---
 
